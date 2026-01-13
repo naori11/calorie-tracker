@@ -30,22 +30,36 @@ bot = commands.Bot(command_prefix="cal!", intents=intents)
 # --- SYSTEM PROMPT ---
 # This is where we instruct the AI on how to handle your "oily" logic
 SYSTEM_PROMPT = """
-You are a Nutrition Assistant. Your goal is to parse natural language food logs into JSON.
+You are a Nutrition Assistant. Your goal is to parse natural language food logs into JSON with full macro information.
 
 RULES:
-1. Identify food items, quantities, and estimate calories.
-2. OIL LOGIC: If the user mentions "oily", "fried", "deep fried", or "high oil absorption", ADD a buffer of 120 calories (approx 1 tbsp oil) to that specific item.
+1. Identify food items, quantities, and estimate calories AND macronutrients (protein, carbs, fat, sugar, salt).
+2. OIL LOGIC: If the user mentions "oily", "fried", "deep fried", or "high oil absorption", ADD a buffer of 120 calories and 14g fat (approx 1 tbsp oil) to that specific item.
 3. BRAND LOGIC: If a specific brand is mentioned (e.g., Birch Tree, Nescafe), use known data for that brand.
-4. If the user provides the calories (e.g., "100cal coffee"), use that EXACT number.
+4. If the user provides the calories (e.g., "100cal coffee"), use that EXACT number and estimate macros proportionally.
+5. All macro values should be in grams (g), salt in milligrams (mg).
 
 OUTPUT FORMAT (JSON ONLY):
 {
   "meal_name": "Label based on time (Breakfast/Lunch/Dinner/Snack)",
   "items": [
-    {"food": "Name of food", "qty": "Quantity", "calories": 0},
-    {"food": "Name of food (Oil Adjusted)", "qty": "Quantity", "calories": 0}
+    {
+      "food": "Name of food",
+      "qty": "Quantity",
+      "calories": 0,
+      "protein": 0,
+      "carbs": 0,
+      "fat": 0,
+      "sugar": 0,
+      "salt": 0
+    }
   ],
-  "total_calories": 0
+  "total_calories": 0,
+  "total_protein": 0,
+  "total_carbs": 0,
+  "total_fat": 0,
+  "total_sugar": 0,
+  "total_salt": 0
 }
 """
 
@@ -185,7 +199,12 @@ async def log_food(ctx, *, user_input: str):
                 "user_name": str(ctx.author),
                 "meal_name": data.get('meal_name', 'Snack'),
                 "items": data.get('items', []),
-                "total_calories": data.get('total_calories', 0)
+                "total_calories": data.get('total_calories', 0),
+                "total_protein": data.get('total_protein', 0),
+                "total_carbs": data.get('total_carbs', 0),
+                "total_fat": data.get('total_fat', 0),
+                "total_sugar": data.get('total_sugar', 0),
+                "total_salt": data.get('total_salt', 0)
             }
             
             # Execute insert
@@ -213,10 +232,24 @@ async def log_food(ctx, *, user_input: str):
         
         item_str = ""
         for item in payload['items']:
-            item_str += f"• **{item['food']}** ({item['qty']}) - {item['calories']} kcal\n"
+            item_str += f"• **{item['food']}** ({item['qty']}) - {item.get('calories', 0)} kcal\n"
+            item_str += f"  P: {item.get('protein', 0)}g | C: {item.get('carbs', 0)}g | F: {item.get('fat', 0)}g\n"
         
         embed.add_field(name="Items", value=item_str or "No items", inline=False)
-        embed.add_field(name="Total Calories", value=f"**{payload['total_calories']} kcal**", inline=False)
+        
+        # Macro summary
+        macro_summary = (
+            f"🔥 **Calories:** {payload['total_calories']} kcal\n"
+            f"🥩 **Protein:** {payload['total_protein']}g\n"
+            f"🍞 **Carbs:** {payload['total_carbs']}g\n"
+            f"🧈 **Fat:** {payload['total_fat']}g"
+        )
+        embed.add_field(name="Nutrition Summary", value=macro_summary, inline=False)
+        
+        # Optional macros (sugar & salt)
+        optional_macros = f"🍬 Sugar: {payload['total_sugar']}g | 🧂 Salt: {payload['total_salt']}mg"
+        embed.add_field(name="Additional Info", value=optional_macros, inline=False)
+        
         embed.set_footer(text="Saved to Supabase database")
 
         await ctx.send(embed=embed)
@@ -267,11 +300,18 @@ async def view_today(ctx):
         )
         
         total_day_calories = 0
+        total_day_protein = 0
+        total_day_carbs = 0
+        total_day_fat = 0
+        total_day_sugar = 0
+        total_day_salt = 0
+        
         for log in logs:
             meal_info = f"**ID:** `{log['id']}`\n"
             for item in log.get('items', []):
-                meal_info += f"• {item['food']} ({item['qty']}) - {item['calories']} kcal\n"
+                meal_info += f"• {item['food']} ({item['qty']}) - {item.get('calories', 0)} kcal\n"
             meal_info += f"**Subtotal:** {log['total_calories']} kcal"
+            meal_info += f" | P: {log.get('total_protein', 0)}g | C: {log.get('total_carbs', 0)}g | F: {log.get('total_fat', 0)}g"
             
             embed.add_field(
                 name=f"🍽️ {log['meal_name']}", 
@@ -279,8 +319,19 @@ async def view_today(ctx):
                 inline=False
             )
             total_day_calories += log.get('total_calories', 0)
+            total_day_protein += log.get('total_protein', 0)
+            total_day_carbs += log.get('total_carbs', 0)
+            total_day_fat += log.get('total_fat', 0)
+            total_day_sugar += log.get('total_sugar', 0)
+            total_day_salt += log.get('total_salt', 0)
         
-        embed.add_field(name="━━━━━━━━━━━━━━━", value=f"🔥 **Total Today: {total_day_calories} kcal**", inline=False)
+        # Daily totals with macros
+        daily_summary = (
+            f"🔥 **Calories:** {total_day_calories} kcal\n"
+            f"🥩 **Protein:** {total_day_protein}g | 🍞 **Carbs:** {total_day_carbs}g | 🧈 **Fat:** {total_day_fat}g\n"
+            f"🍬 Sugar: {total_day_sugar}g | 🧂 Salt: {total_day_salt}mg"
+        )
+        embed.add_field(name="━━━ Daily Totals ━━━", value=daily_summary, inline=False)
         embed.set_footer(text=f"Use cal!delete <ID> to remove a meal")
         
         await ctx.send(embed=embed)
@@ -357,8 +408,11 @@ async def view_week(ctx):
         for log in logs:
             log_date = datetime.fromisoformat(log['created_at'].replace('Z', '+00:00')).strftime('%A, %b %d')
             if log_date not in daily_totals:
-                daily_totals[log_date] = 0
-            daily_totals[log_date] += log.get('total_calories', 0)
+                daily_totals[log_date] = {'calories': 0, 'protein': 0, 'carbs': 0, 'fat': 0}
+            daily_totals[log_date]['calories'] += log.get('total_calories', 0)
+            daily_totals[log_date]['protein'] += log.get('total_protein', 0)
+            daily_totals[log_date]['carbs'] += log.get('total_carbs', 0)
+            daily_totals[log_date]['fat'] += log.get('total_fat', 0)
         
         embed = discord.Embed(
             title="📊 This Week's Summary",
@@ -367,15 +421,26 @@ async def view_week(ctx):
         )
         
         total_week = 0
-        for day, cals in daily_totals.items():
-            embed.add_field(name=day, value=f"{cals} kcal", inline=True)
-            total_week += cals
+        total_week_protein = 0
+        total_week_carbs = 0
+        total_week_fat = 0
+        
+        for day, data in daily_totals.items():
+            day_info = f"{data['calories']} kcal\nP: {data['protein']}g | C: {data['carbs']}g | F: {data['fat']}g"
+            embed.add_field(name=day, value=day_info, inline=True)
+            total_week += data['calories']
+            total_week_protein += data['protein']
+            total_week_carbs += data['carbs']
+            total_week_fat += data['fat']
         
         avg_daily = total_week // len(daily_totals) if daily_totals else 0
+        avg_protein = total_week_protein // len(daily_totals) if daily_totals else 0
+        avg_carbs = total_week_carbs // len(daily_totals) if daily_totals else 0
+        avg_fat = total_week_fat // len(daily_totals) if daily_totals else 0
         
         embed.add_field(name="━━━━━━━━━━━━━━━", value="\u200b", inline=False)
-        embed.add_field(name="🔥 Week Total", value=f"**{total_week} kcal**", inline=True)
-        embed.add_field(name="📈 Daily Avg", value=f"**{avg_daily} kcal**", inline=True)
+        embed.add_field(name="🔥 Week Total", value=f"**{total_week} kcal**\nP: {total_week_protein}g | C: {total_week_carbs}g | F: {total_week_fat}g", inline=True)
+        embed.add_field(name="📈 Daily Avg", value=f"**{avg_daily} kcal**\nP: {avg_protein}g | C: {avg_carbs}g | F: {avg_fat}g", inline=True)
         
         await ctx.send(embed=embed)
 
