@@ -55,32 +55,157 @@ async def on_ready():
     print(f'📋 Commands: cal!log, cal!today, cal!delete, cal!week, cal!history, cal!help')
 
 
+# --- GLOBAL ERROR HANDLER ---
+@bot.event
+async def on_command_error(ctx, error):
+    """Global error handler for all commands"""
+    if isinstance(error, commands.MissingRequiredArgument):
+        if ctx.command.name == 'log':
+            embed = discord.Embed(
+                title="❌ Missing Food Description",
+                description="Please provide what you ate after the command.",
+                color=discord.Color.red()
+            )
+            embed.add_field(
+                name="Usage", 
+                value="`cal!log <food description>`", 
+                inline=False
+            )
+            embed.add_field(
+                name="Examples", 
+                value="• `cal!log 2 eggs and toast`\n• `cal!log fried chicken with rice`\n• `cal!log 100cal coffee`", 
+                inline=False
+            )
+            await ctx.send(embed=embed)
+        elif ctx.command.name == 'delete':
+            await ctx.send("❌ Please provide a meal ID to delete. Usage: `cal!delete <meal_id>`\nFind meal IDs with `cal!today`")
+        else:
+            await ctx.send(f"❌ Missing required argument. Use `cal!commands` for help.")
+    elif isinstance(error, commands.CommandNotFound):
+        # Silently ignore unknown commands
+        pass
+    elif isinstance(error, commands.BadArgument):
+        if ctx.command.name == 'delete':
+            await ctx.send("❌ Invalid meal ID. Please provide a valid number.\nUse `cal!today` to see meal IDs.")
+        else:
+            await ctx.send(f"❌ Invalid argument provided. Use `cal!commands` for help.")
+    else:
+        # For other errors, log them but don't expose details to users
+        print(f"Unhandled error in {ctx.command}: {error}")
+        await ctx.send("❌ An unexpected error occurred. Please try again later.")
+
+
 # --- COMMAND: LOG FOOD ---
 @bot.command(name='log')
 async def log_food(ctx, *, user_input: str):
     """Log a meal. Usage: cal!log <food description>"""
+    # Validate input is not empty or just whitespace
+    if not user_input or user_input.strip() == "":
+        embed = discord.Embed(
+            title="❌ Empty Food Description",
+            description="Please describe what you ate.",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="Example", value="`cal!log 2 eggs and toast with butter`", inline=False)
+        await ctx.send(embed=embed)
+        return
+    
     await ctx.message.add_reaction("⏳")
 
     try:
         # A. CALL GEMINI
-        response = model.generate_content(f"{SYSTEM_PROMPT}\n\nUSER INPUT: {user_input}")
+        try:
+            response = model.generate_content(f"{SYSTEM_PROMPT}\n\nUSER INPUT: {user_input}")
+            
+            if not response or not response.text:
+                raise ValueError("Gemini returned an empty response")
+                
+        except Exception as gemini_error:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            await ctx.send(
+                f"❌ **AI Service Error**\n"
+                f"Could not process your food description. This might be due to:\n"
+                f"• API rate limits\n"
+                f"• Network issues\n"
+                f"• Service temporary unavailability\n\n"
+                f"Please try again in a moment."
+            )
+            print(f"Gemini API Error: {gemini_error}")
+            return
         
-        # Clean up response (sometimes models add markdown backticks)
-        cleaned_json = response.text.replace('```json', '').replace('```', '').strip()
-        data = json.loads(cleaned_json)
+        # B. PARSE JSON
+        try:
+            # Clean up response (sometimes models add markdown backticks)
+            cleaned_json = response.text.replace('```json', '').replace('```', '').strip()
+            data = json.loads(cleaned_json)
+            
+            # Validate required fields
+            if not isinstance(data, dict):
+                raise ValueError("Response is not a valid JSON object")
+            
+            if 'items' not in data or not isinstance(data['items'], list):
+                raise ValueError("Missing or invalid 'items' field")
+            
+            if len(data['items']) == 0:
+                await ctx.message.remove_reaction("⏳", bot.user)
+                await ctx.message.add_reaction("⚠️")
+                await ctx.send(
+                    f"⚠️ **No Food Items Detected**\n"
+                    f"I couldn't identify any food items from: *\"{user_input}\"*\n\n"
+                    f"Please try describing your food more clearly."
+                )
+                return
+                
+        except json.JSONDecodeError as json_error:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            await ctx.send(
+                f"❌ **Parsing Error**\n"
+                f"The AI returned an invalid response format. Please try again.\n\n"
+                f"If this persists, try rephrasing your food description."
+            )
+            print(f"JSON Parse Error: {json_error}")
+            print(f"Raw response: {response.text}")
+            return
+        except ValueError as val_error:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            await ctx.send(
+                f"❌ **Invalid Response Structure**\n"
+                f"{str(val_error)}\n\n"
+                f"Please try again with a clearer food description."
+            )
+            print(f"Validation Error: {val_error}")
+            return
 
-        # B. SAVE TO SUPABASE
-        payload = {
-            "user_name": str(ctx.author),
-            "meal_name": data.get('meal_name', 'Snack'),
-            "items": data.get('items', []),
-            "total_calories": data.get('total_calories', 0)
-        }
-        
-        # Execute insert
-        supabase.table('food_logs').insert(payload).execute()
+        # C. SAVE TO SUPABASE
+        try:
+            payload = {
+                "user_name": str(ctx.author),
+                "meal_name": data.get('meal_name', 'Snack'),
+                "items": data.get('items', []),
+                "total_calories": data.get('total_calories', 0)
+            }
+            
+            # Execute insert
+            result = supabase.table('food_logs').insert(payload).execute()
+            
+            if not result.data:
+                raise ValueError("Database insert returned no data")
+                
+        except Exception as db_error:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            await ctx.send(
+                f"❌ **Database Error**\n"
+                f"Failed to save your meal to the database.\n\n"
+                f"Please check your database connection and try again."
+            )
+            print(f"Database Error: {db_error}")
+            return
 
-        # C. REPLY TO USER
+        # D. REPLY TO USER
         embed = discord.Embed(
             title=f"🍽️ {payload['meal_name']} Logged",
             color=discord.Color.green()
@@ -91,7 +216,7 @@ async def log_food(ctx, *, user_input: str):
             item_str += f"• **{item['food']}** ({item['qty']}) - {item['calories']} kcal\n"
         
         embed.add_field(name="Items", value=item_str or "No items", inline=False)
-        embed.add_field(name="Total Calories", value=f"**{payload['total_calories']}**", inline=False)
+        embed.add_field(name="Total Calories", value=f"**{payload['total_calories']} kcal**", inline=False)
         embed.set_footer(text="Saved to Supabase database")
 
         await ctx.send(embed=embed)
@@ -99,8 +224,17 @@ async def log_food(ctx, *, user_input: str):
         await ctx.message.add_reaction("✅")
 
     except Exception as e:
-        await ctx.send(f"❌ Error: {str(e)}")
-        print(f"Error: {e}")
+        # Catch-all for any unexpected errors
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("❌")
+        await ctx.send(
+            f"❌ **Unexpected Error**\n"
+            f"Something went wrong while processing your request.\n\n"
+            f"Error details: `{str(e)}`"
+        )
+        print(f"Unexpected Error in log_food: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 # --- COMMAND: VIEW TODAY'S MEALS ---
