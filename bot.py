@@ -6,6 +6,7 @@ from discord.ext import commands
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
+import threading
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -14,13 +15,21 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+DEV_USER_IDS = [uid.strip() for uid in os.getenv('DEV_USER_IDS', '').split(',') if uid.strip()]  # Comma-separated Discord user IDs
 
 # 2. Setup Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 3. Setup Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash-lite')
+current_model_name = 'gemini-2.5-flash-lite'  # Default model
+model = genai.GenerativeModel(current_model_name)
+model_lock = threading.Lock()  # Protect model variables from concurrent access
+
+# 3.1. Dev-only check helper
+def is_dev(user_id: int) -> bool:
+    """Check if user is a developer"""
+    return str(user_id) in DEV_USER_IDS
 
 # 4. Setup Discord with cal! prefix
 intents = discord.Intents.default()
@@ -95,7 +104,12 @@ OUTPUT FORMAT (JSON ONLY):
 @bot.event
 async def on_ready():
     print(f'✅ Logged in as {bot.user}')
+    with model_lock:
+        print(f'🤖 Using model: {current_model_name}')
     print(f'📋 Commands: cal!log, cal!today, cal!delete, cal!week, cal!history, cal!help')
+    filtered_dev_user_ids = [user_id for user_id in DEV_USER_IDS if user_id]
+    if filtered_dev_user_ids:
+        print(f'👨‍💻 Dev commands enabled for: {filtered_dev_user_ids}')
 
 
 # --- GLOBAL ERROR HANDLER ---
@@ -158,7 +172,8 @@ async def log_food(ctx, *, user_input: str):
     try:
         # A. CALL GEMINI
         try:
-            response = model.generate_content(f"{SYSTEM_PROMPT}\n\nUSER INPUT: {user_input}")
+            with model_lock:
+                response = model.generate_content(f"{SYSTEM_PROMPT}\n\nUSER INPUT: {user_input}")
             
             if not response or not response.text:
                 raise ValueError("Gemini returned an empty response")
@@ -555,6 +570,185 @@ async def view_history(ctx):
         print(f"Error: {e}")
 
 
+# --- DEV COMMAND: LIST MODELS ---
+@bot.command(name='models', aliases=['lm'])
+async def list_models(ctx):
+    """[DEV ONLY] List all available Gemini models. Usage: cal!models"""
+    if not is_dev(ctx.author.id):
+        await ctx.send("❌ This command is only available to developers.")
+        return
+    
+    try:
+        await ctx.message.add_reaction("⏳")
+        
+        # Fetch all available models
+        models = genai.list_models()
+        
+        with model_lock:
+            current = current_model_name
+        
+        embed = discord.Embed(
+            title="🤖 Available Gemini Models",
+            description=f"Current model: **{current}**",
+            color=discord.Color.blue()
+        )
+        
+        # Filter for generative models and group by type
+        gemini_models = []
+        for m in models:
+            # Only include models that support generateContent
+            if 'generateContent' in m.supported_generation_methods:
+                model_info = {
+                    'name': m.name.replace('models/', ''),
+                    'display_name': m.display_name,
+                    'description': m.description[:100] + '...' if len(m.description) > 100 else m.description
+                }
+                gemini_models.append(model_info)
+        
+        # Sort models by name
+        gemini_models.sort(key=lambda x: x['name'])
+        
+        # Check if any models were found
+        if not gemini_models:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("⚠️")
+            await ctx.send(
+                f"⚠️ **No Generative Models Available**\n"
+                f"Could not find any models that support content generation.\n\n"
+                f"This might indicate an API issue or configuration problem."
+            )
+            return
+        
+        # Build complete model list first
+        model_list = ""
+        for idx, m in enumerate(gemini_models, 1):
+            current_marker = "✅ " if m['name'] == current else ""
+            model_list += f"{current_marker}**{idx}. {m['name']}**\n"
+            if m.get('display_name'):
+                model_list += f"   {m['display_name']}\n"
+            model_list += "\n"
+        
+        # Split into multiple fields if needed (Discord embed field limit is 1024 chars)
+        max_field_length = 950
+        if len(model_list) <= max_field_length:
+            embed.add_field(name="Available Models", value=model_list, inline=False)
+        else:
+            # Split the model list into chunks
+            field_chunks = []
+            current_chunk = ""
+            
+            for line in model_list.split('\n'):
+                test_chunk = current_chunk + line + '\n'
+                if len(test_chunk) > max_field_length and current_chunk:
+                    field_chunks.append(current_chunk)
+                    current_chunk = line + '\n'
+                else:
+                    current_chunk = test_chunk
+            
+            if current_chunk:
+                field_chunks.append(current_chunk)
+            
+            # Add fields with proper titles
+            for idx, chunk in enumerate(field_chunks):
+                if idx == 0:
+                    field_name = "Available Models"
+                else:
+                    field_name = f"Available Models (continued {idx})"
+                embed.add_field(name=field_name, value=chunk, inline=False)
+        
+        embed.set_footer(text=f"Use cal!setmodel <model_name> to switch models")
+        
+        await ctx.send(embed=embed)
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("✅")
+        
+    except Exception as e:
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("❌")
+        await ctx.send(f"❌ Error fetching models: {str(e)}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+# --- DEV COMMAND: SET MODEL ---
+@bot.command(name='setmodel', aliases=['sm'])
+async def set_model(ctx, *, model_name: str):
+    """[DEV ONLY] Change the Gemini model. Usage: cal!setmodel <model_name>"""
+    global model, current_model_name
+    
+    if not is_dev(ctx.author.id):
+        await ctx.send("❌ This command is only available to developers.")
+        return
+    
+    try:
+        await ctx.message.add_reaction("⏳")
+        
+        # Clean up model name (remove 'models/' prefix if present)
+        model_name = model_name.replace('models/', '').strip()
+
+        # Validate that the cleaned model name is not empty
+        if not model_name:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            await ctx.send(
+                "❌ **Invalid Model Name**\n"
+                "The model name cannot be empty after cleanup.\n\n"
+                "Please provide a valid model identifier, for example:\n"
+                "`cal!setmodel gemini-1.5-pro`\n\n"
+                "Use `cal!models` to see available models."
+            )
+            return
+        
+        # Try to create a new model instance
+        try:
+            new_model = genai.GenerativeModel(model_name)
+            # Test the model with a simple request
+            test_response = new_model.generate_content("Say 'OK'")
+            # Ensure the model actually returned some content (not just a non-null response object)
+            has_text = getattr(test_response, "text", None)
+            has_candidates = getattr(test_response, "candidates", None)
+            if (not has_text or not str(has_text).strip()) and not has_candidates:
+                raise ValueError("Model test failed: no content generated by model")
+        except Exception as model_error:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            await ctx.send(
+                f"❌ **Invalid Model**\n"
+                f"Could not switch to model: `{model_name}`\n\n"
+                f"Error: {str(model_error)}\n\n"
+                f"Use `cal!models` to see available models."
+            )
+            return
+        
+        # Update the global model (protected by lock)
+        with model_lock:
+            old_model = current_model_name
+            model = new_model
+            current_model_name = model_name
+        
+        embed = discord.Embed(
+            title="✅ Model Changed",
+            description=f"Successfully switched to **{model_name}**",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Previous Model", value=old_model, inline=True)
+        embed.add_field(name="New Model", value=model_name, inline=True)
+        embed.set_footer(text="All future requests will use this model")
+        
+        await ctx.send(embed=embed)
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("✅")
+        
+    except Exception as e:
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("❌")
+        await ctx.send(f"❌ Error changing model: {str(e)}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 # --- COMMAND: HELP ---
 @bot.command(name='commands', aliases=['c'])
 async def show_help(ctx):
@@ -590,6 +784,24 @@ async def show_help(ctx):
         value="View calorie summary for all past weeks", 
         inline=False
     )
+    
+    # Add dev commands if user is a developer
+    if is_dev(ctx.author.id):
+        embed.add_field(
+            name="━━━━━━ DEV ONLY ━━━━━━",
+            value="\u200b",
+            inline=False
+        )
+        embed.add_field(
+            name="cal!models",
+            value="List all available Gemini models",
+            inline=False
+        )
+        embed.add_field(
+            name="cal!setmodel <name>",
+            value="Change the active Gemini model",
+            inline=False
+        )
     
     embed.set_footer(text="💡 Tip: Mention 'oily' or 'fried' for auto oil adjustment!")
     
