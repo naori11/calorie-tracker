@@ -24,7 +24,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
 current_model_name = 'gemini-2.5-flash-lite'  # Default model
 model = genai.GenerativeModel(current_model_name)
-model_lock = threading.Lock()  # Lock to protect concurrent access to model and current_model_name
+model_lock = threading.Lock()  # Protect model variables from concurrent access
 
 # 3.1. Dev-only check helper
 def is_dev(user_id: int) -> bool:
@@ -104,7 +104,8 @@ OUTPUT FORMAT (JSON ONLY):
 @bot.event
 async def on_ready():
     print(f'✅ Logged in as {bot.user}')
-    print(f'🤖 Using model: {current_model_name}')
+    with model_lock:
+        print(f'🤖 Using model: {current_model_name}')
     print(f'📋 Commands: cal!log, cal!today, cal!delete, cal!week, cal!history, cal!help')
     if DEV_USER_IDS and DEV_USER_IDS[0]:
         print(f'👨‍💻 Dev commands enabled for: {DEV_USER_IDS}')
@@ -582,13 +583,12 @@ async def list_models(ctx):
         # Fetch all available models
         models = genai.list_models()
         
-        # Get current model name in a thread-safe way
         with model_lock:
-            current_model = current_model_name
+            current = current_model_name
         
         embed = discord.Embed(
             title="🤖 Available Gemini Models",
-            description=f"Current model: **{current_model}**",
+            description=f"Current model: **{current}**",
             color=discord.Color.blue()
         )
         
@@ -610,7 +610,7 @@ async def list_models(ctx):
         # Display models in groups
         model_list = ""
         for idx, m in enumerate(gemini_models, 1):
-            current_marker = "✅ " if m['name'] == current_model else ""
+            current_marker = "✅ " if m['name'] == current else ""
             model_list += f"{current_marker}**{idx}. {m['name']}**\n"
             if m.get('display_name'):
                 model_list += f"   {m['display_name']}\n"
@@ -673,7 +673,7 @@ async def set_model(ctx, *, model_name: str):
             )
             return
         
-        # Update the global model in a thread-safe way
+        # Update the global model (protected by lock)
         with model_lock:
             old_model = current_model_name
             model = new_model
