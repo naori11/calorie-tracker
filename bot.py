@@ -6,6 +6,7 @@ from discord.ext import commands
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
+import threading
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -23,6 +24,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
 current_model_name = 'gemini-2.5-flash-lite'  # Default model
 model = genai.GenerativeModel(current_model_name)
+model_lock = threading.Lock()  # Lock to protect concurrent access to model and current_model_name
 
 # 3.1. Dev-only check helper
 def is_dev(user_id: int) -> bool:
@@ -168,7 +170,8 @@ async def log_food(ctx, *, user_input: str):
     try:
         # A. CALL GEMINI
         try:
-            response = model.generate_content(f"{SYSTEM_PROMPT}\n\nUSER INPUT: {user_input}")
+            with model_lock:
+                response = model.generate_content(f"{SYSTEM_PROMPT}\n\nUSER INPUT: {user_input}")
             
             if not response or not response.text:
                 raise ValueError("Gemini returned an empty response")
@@ -579,9 +582,13 @@ async def list_models(ctx):
         # Fetch all available models
         models = genai.list_models()
         
+        # Get current model name in a thread-safe way
+        with model_lock:
+            current_model = current_model_name
+        
         embed = discord.Embed(
             title="🤖 Available Gemini Models",
-            description=f"Current model: **{current_model_name}**",
+            description=f"Current model: **{current_model}**",
             color=discord.Color.blue()
         )
         
@@ -603,7 +610,7 @@ async def list_models(ctx):
         # Display models in groups
         model_list = ""
         for idx, m in enumerate(gemini_models, 1):
-            current_marker = "✅ " if m['name'] == current_model_name else ""
+            current_marker = "✅ " if m['name'] == current_model else ""
             model_list += f"{current_marker}**{idx}. {m['name']}**\n"
             if m.get('display_name'):
                 model_list += f"   {m['display_name']}\n"
@@ -666,10 +673,11 @@ async def set_model(ctx, *, model_name: str):
             )
             return
         
-        # Update the global model
-        old_model = current_model_name
-        model = new_model
-        current_model_name = model_name
+        # Update the global model in a thread-safe way
+        with model_lock:
+            old_model = current_model_name
+            model = new_model
+            current_model_name = model_name
         
         embed = discord.Embed(
             title="✅ Model Changed",
@@ -677,7 +685,7 @@ async def set_model(ctx, *, model_name: str):
             color=discord.Color.green()
         )
         embed.add_field(name="Previous Model", value=old_model, inline=True)
-        embed.add_field(name="New Model", value=current_model_name, inline=True)
+        embed.add_field(name="New Model", value=model_name, inline=True)
         embed.set_footer(text="All future requests will use this model")
         
         await ctx.send(embed=embed)
