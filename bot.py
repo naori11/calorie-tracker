@@ -107,8 +107,9 @@ async def on_ready():
     with model_lock:
         print(f'🤖 Using model: {current_model_name}')
     print(f'📋 Commands: cal!log, cal!today, cal!delete, cal!week, cal!history, cal!help')
-    if DEV_USER_IDS and DEV_USER_IDS[0]:
-        print(f'👨‍💻 Dev commands enabled for: {DEV_USER_IDS}')
+    filtered_dev_user_ids = [user_id for user_id in DEV_USER_IDS if user_id]
+    if filtered_dev_user_ids:
+        print(f'👨‍💻 Dev commands enabled for: {filtered_dev_user_ids}')
 
 
 # --- GLOBAL ERROR HANDLER ---
