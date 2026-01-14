@@ -686,6 +686,19 @@ async def set_model(ctx, *, model_name: str):
         
         # Clean up model name (remove 'models/' prefix if present)
         model_name = model_name.replace('models/', '').strip()
+
+        # Validate that the cleaned model name is not empty
+        if not model_name:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            await ctx.send(
+                "❌ **Invalid Model Name**\n"
+                "The model name cannot be empty after cleanup.\n\n"
+                "Please provide a valid model identifier, for example:\n"
+                "`cal!setmodel gemini-1.5-pro`\n\n"
+                "Use `cal!models` to see available models."
+            )
+            return
         
         # Try to create a new model instance
         try:
