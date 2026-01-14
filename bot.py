@@ -607,6 +607,17 @@ async def list_models(ctx):
         # Sort models by name
         gemini_models.sort(key=lambda x: x['name'])
         
+        # Check if any models were found
+        if not gemini_models:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("⚠️")
+            await ctx.send(
+                f"⚠️ **No Generative Models Available**\n"
+                f"Could not find any models that support content generation.\n\n"
+                f"This might indicate an API issue or configuration problem."
+            )
+            return
+        
         # Display models in groups
         model_list = ""
         for idx, m in enumerate(gemini_models, 1):
