@@ -20,7 +20,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 3. Setup Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
 # 4. Setup Discord with cal! prefix
 intents = discord.Intents.default()
@@ -110,7 +110,7 @@ async def on_command_error(ctx, error):
 
 
 # --- COMMAND: LOG FOOD ---
-@bot.command(name='log')
+@bot.command(name='log', aliases=['l'])
 async def log_food(ctx, *, user_input: str):
     """Log a meal. Usage: cal!log <food description>"""
     # Validate input is not empty or just whitespace
@@ -271,7 +271,7 @@ async def log_food(ctx, *, user_input: str):
 
 
 # --- COMMAND: VIEW TODAY'S MEALS ---
-@bot.command(name='today')
+@bot.command(name='today', aliases=['t'])
 async def view_today(ctx):
     """View all meals logged today. Usage: cal!today"""
     try:
@@ -342,7 +342,7 @@ async def view_today(ctx):
 
 
 # --- COMMAND: DELETE A MEAL ---
-@bot.command(name='delete')
+@bot.command(name='delete', aliases=['d'])
 async def delete_meal(ctx, meal_id: int):
     """Delete a specific meal by ID. Usage: cal!delete <meal_id>"""
     try:
@@ -379,7 +379,7 @@ async def delete_meal(ctx, meal_id: int):
 
 
 # --- COMMAND: CURRENT WEEK SUMMARY ---
-@bot.command(name='week')
+@bot.command(name='week', aliases=['w'])
 async def view_week(ctx):
     """View calorie summary for the current week. Usage: cal!week"""
     try:
@@ -450,7 +450,7 @@ async def view_week(ctx):
 
 
 # --- COMMAND: ALL WEEKS HISTORY ---
-@bot.command(name='history')
+@bot.command(name='history', aliases=['h'])
 async def view_history(ctx):
     """View calorie summary for all past weeks. Usage: cal!history"""
     try:
@@ -512,7 +512,7 @@ async def view_history(ctx):
 
 
 # --- COMMAND: HELP ---
-@bot.command(name='commands')
+@bot.command(name='commands', aliases=['c', 'help'])
 async def show_help(ctx):
     """Show all available commands. Usage: cal!commands"""
     embed = discord.Embed(
