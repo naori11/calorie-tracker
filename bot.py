@@ -618,7 +618,7 @@ async def list_models(ctx):
             )
             return
         
-        # Display models in groups
+        # Build complete model list first
         model_list = ""
         for idx, m in enumerate(gemini_models, 1):
             current_marker = "✅ " if m['name'] == current else ""
@@ -626,14 +626,34 @@ async def list_models(ctx):
             if m.get('display_name'):
                 model_list += f"   {m['display_name']}\n"
             model_list += "\n"
-            
-            # Discord embed field limit is 1024 chars
-            if len(model_list) > 950:
-                embed.add_field(name="Models (continued)", value=model_list, inline=False)
-                model_list = ""
         
-        if model_list:
+        # Split into multiple fields if needed (Discord embed field limit is 1024 chars)
+        max_field_length = 950
+        if len(model_list) <= max_field_length:
             embed.add_field(name="Available Models", value=model_list, inline=False)
+        else:
+            # Split the model list into chunks
+            field_chunks = []
+            current_chunk = ""
+            
+            for line in model_list.split('\n'):
+                test_chunk = current_chunk + line + '\n'
+                if len(test_chunk) > max_field_length and current_chunk:
+                    field_chunks.append(current_chunk)
+                    current_chunk = line + '\n'
+                else:
+                    current_chunk = test_chunk
+            
+            if current_chunk:
+                field_chunks.append(current_chunk)
+            
+            # Add fields with proper titles
+            for idx, chunk in enumerate(field_chunks):
+                if idx == 0:
+                    field_name = "Available Models"
+                else:
+                    field_name = f"Available Models (continued {idx})"
+                embed.add_field(name=field_name, value=chunk, inline=False)
         
         embed.set_footer(text=f"Use cal!setmodel <model_name> to switch models")
         
