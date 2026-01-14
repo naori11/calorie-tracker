@@ -49,6 +49,10 @@ Examples:
 Notes:
 - `cal!today`, `cal!week`, and `cal!history` depend on `created_at` being present and comparable.
 - `cal!delete` depends on `id`.
+- Each meal is automatically assigned a short, systematic ID in the format `M{day}{sequence}`:
+    - **M14A** = First meal logged on day 14
+    - **M14B** = Second meal logged on day 14
+    - **M14C** = Third meal logged on day 14
 
 ## How logging works
 

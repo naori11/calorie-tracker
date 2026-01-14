@@ -27,6 +27,35 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="cal!", intents=intents)
 
+# 5. Helper function to generate short meal ID
+def generate_short_id(user_name: str, date_obj: datetime) -> str:
+    """Generate a short, systematic ID like M14A (Meal on day 14, sequence A)"""
+    day = date_obj.day
+    
+    # Get today's meals to determine sequence letter
+    today_start = date_obj.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    today_end = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
+    
+    result = supabase.table('food_logs')\
+        .select('short_id')\
+        .eq('user_name', user_name)\
+        .gte('created_at', today_start)\
+        .lte('created_at', today_end)\
+        .order('created_at', desc=False)\
+        .execute()
+    
+    # Calculate next sequence letter (A, B, C, ...)
+    sequence_num = len(result.data) if result.data else 0
+    sequence_letter = chr(65 + sequence_num)  # 65 is ASCII for 'A'
+    
+    # If we exceed Z, wrap to AA, AB, etc.
+    if sequence_num > 25:
+        first_letter = chr(65 + ((sequence_num - 26) // 26))
+        second_letter = chr(65 + ((sequence_num - 26) % 26))
+        sequence_letter = first_letter + second_letter
+    
+    return f"M{day}{sequence_letter}"
+
 # --- SYSTEM PROMPT ---
 # This is where we instruct the AI on how to handle your "oily" logic
 SYSTEM_PROMPT = """
@@ -195,8 +224,12 @@ async def log_food(ctx, *, user_input: str):
 
         # C. SAVE TO SUPABASE
         try:
+            # Generate short ID
+            short_id = generate_short_id(str(ctx.author), datetime.now())
+            
             payload = {
                 "user_name": str(ctx.author),
+                "short_id": short_id,
                 "meal_name": data.get('meal_name', 'Snack'),
                 "items": data.get('items', []),
                 "total_calories": data.get('total_calories', 0),
@@ -307,7 +340,9 @@ async def view_today(ctx):
         total_day_salt = 0
         
         for log in logs:
-            meal_info = f"**ID:** `{log['id']}`\n"
+            # Use short_id if available, fallback to id
+            display_id = log.get('short_id', log['id'])
+            meal_info = f"**ID:** `{display_id}`\n"
             for item in log.get('items', []):
                 meal_info += f"• {item['food']} ({item['qty']}) - {item.get('calories', 0)} kcal\n"
             meal_info += f"**Subtotal:** {log['total_calories']} kcal"
@@ -343,33 +378,42 @@ async def view_today(ctx):
 
 # --- COMMAND: DELETE A MEAL ---
 @bot.command(name='delete', aliases=['d'])
-async def delete_meal(ctx, meal_id: int):
+async def delete_meal(ctx, meal_id: str):
     """Delete a specific meal by ID. Usage: cal!delete <meal_id>"""
     try:
         user_name = str(ctx.author)
         
-        # First verify the meal belongs to the user
+        # Try to find meal by short_id first, then by numeric id
         check = supabase.table('food_logs')\
             .select('*')\
-            .eq('id', meal_id)\
             .eq('user_name', user_name)\
+            .eq('short_id', meal_id.upper())\
             .execute()
+        
+        # If not found by short_id and meal_id is numeric, try by id
+        if not check.data and meal_id.isdigit():
+            check = supabase.table('food_logs')\
+                .select('*')\
+                .eq('user_name', user_name)\
+                .eq('id', int(meal_id))\
+                .execute()
         
         if not check.data:
             await ctx.send(f"❌ Meal ID `{meal_id}` not found or doesn't belong to you.")
             return
         
         meal = check.data[0]
+        display_id = meal.get('short_id', meal['id'])
         
-        # Delete the meal
-        supabase.table('food_logs').delete().eq('id', meal_id).execute()
+        # Delete the meal by its database id
+        supabase.table('food_logs').delete().eq('id', meal['id']).execute()
         
         embed = discord.Embed(
             title="🗑️ Meal Deleted",
             description=f"Successfully removed **{meal['meal_name']}** ({meal['total_calories']} kcal)",
             color=discord.Color.red()
         )
-        embed.set_footer(text=f"ID: {meal_id}")
+        embed.set_footer(text=f"ID: {display_id}")
         
         await ctx.send(embed=embed)
 
@@ -512,7 +556,7 @@ async def view_history(ctx):
 
 
 # --- COMMAND: HELP ---
-@bot.command(name='commands', aliases=['c', 'help'])
+@bot.command(name='commands', aliases=['c'])
 async def show_help(ctx):
     """Show all available commands. Usage: cal!commands"""
     embed = discord.Embed(
