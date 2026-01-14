@@ -14,13 +14,20 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+DEV_USER_IDS = os.getenv('DEV_USER_IDS', '').split(',')  # Comma-separated Discord user IDs
 
 # 2. Setup Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 3. Setup Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash-lite')
+current_model_name = 'gemini-2.5-flash-lite'  # Default model
+model = genai.GenerativeModel(current_model_name)
+
+# 3.1. Dev-only check helper
+def is_dev(user_id: int) -> bool:
+    """Check if user is a developer"""
+    return str(user_id) in DEV_USER_IDS
 
 # 4. Setup Discord with cal! prefix
 intents = discord.Intents.default()
@@ -95,7 +102,10 @@ OUTPUT FORMAT (JSON ONLY):
 @bot.event
 async def on_ready():
     print(f'✅ Logged in as {bot.user}')
+    print(f'🤖 Using model: {current_model_name}')
     print(f'📋 Commands: cal!log, cal!today, cal!delete, cal!week, cal!history, cal!help')
+    if DEV_USER_IDS and DEV_USER_IDS[0]:
+        print(f'👨‍💻 Dev commands enabled for: {DEV_USER_IDS}')
 
 
 # --- GLOBAL ERROR HANDLER ---
@@ -555,6 +565,134 @@ async def view_history(ctx):
         print(f"Error: {e}")
 
 
+# --- DEV COMMAND: LIST MODELS ---
+@bot.command(name='models', aliases=['lm'])
+async def list_models(ctx):
+    """[DEV ONLY] List all available Gemini models. Usage: cal!models"""
+    if not is_dev(ctx.author.id):
+        await ctx.send("❌ This command is only available to developers.")
+        return
+    
+    try:
+        await ctx.message.add_reaction("⏳")
+        
+        # Fetch all available models
+        models = genai.list_models()
+        
+        embed = discord.Embed(
+            title="🤖 Available Gemini Models",
+            description=f"Current model: **{current_model_name}**",
+            color=discord.Color.blue()
+        )
+        
+        # Filter for generative models and group by type
+        gemini_models = []
+        for m in models:
+            # Only include models that support generateContent
+            if 'generateContent' in m.supported_generation_methods:
+                model_info = {
+                    'name': m.name.replace('models/', ''),
+                    'display_name': m.display_name,
+                    'description': m.description[:100] + '...' if len(m.description) > 100 else m.description
+                }
+                gemini_models.append(model_info)
+        
+        # Sort models by name
+        gemini_models.sort(key=lambda x: x['name'])
+        
+        # Display models in groups
+        model_list = ""
+        for idx, m in enumerate(gemini_models, 1):
+            current_marker = "✅ " if m['name'] == current_model_name else ""
+            model_list += f"{current_marker}**{idx}. {m['name']}**\n"
+            if m.get('display_name'):
+                model_list += f"   {m['display_name']}\n"
+            model_list += "\n"
+            
+            # Discord embed field limit is 1024 chars
+            if len(model_list) > 950:
+                embed.add_field(name="Models (continued)", value=model_list, inline=False)
+                model_list = ""
+        
+        if model_list:
+            embed.add_field(name="Available Models", value=model_list, inline=False)
+        
+        embed.set_footer(text=f"Use cal!setmodel <model_name> to switch models")
+        
+        await ctx.send(embed=embed)
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("✅")
+        
+    except Exception as e:
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("❌")
+        await ctx.send(f"❌ Error fetching models: {str(e)}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+# --- DEV COMMAND: SET MODEL ---
+@bot.command(name='setmodel', aliases=['sm'])
+async def set_model(ctx, *, model_name: str):
+    """[DEV ONLY] Change the Gemini model. Usage: cal!setmodel <model_name>"""
+    global model, current_model_name
+    
+    if not is_dev(ctx.author.id):
+        await ctx.send("❌ This command is only available to developers.")
+        return
+    
+    try:
+        await ctx.message.add_reaction("⏳")
+        
+        # Clean up model name (remove 'models/' prefix if present)
+        model_name = model_name.replace('models/', '').strip()
+        
+        # Try to create a new model instance
+        try:
+            new_model = genai.GenerativeModel(model_name)
+            # Test the model with a simple request
+            test_response = new_model.generate_content("Say 'OK'")
+            if not test_response:
+                raise ValueError("Model test failed")
+        except Exception as model_error:
+            await ctx.message.remove_reaction("⏳", bot.user)
+            await ctx.message.add_reaction("❌")
+            await ctx.send(
+                f"❌ **Invalid Model**\n"
+                f"Could not switch to model: `{model_name}`\n\n"
+                f"Error: {str(model_error)}\n\n"
+                f"Use `cal!models` to see available models."
+            )
+            return
+        
+        # Update the global model
+        old_model = current_model_name
+        model = new_model
+        current_model_name = model_name
+        
+        embed = discord.Embed(
+            title="✅ Model Changed",
+            description=f"Successfully switched to **{model_name}**",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Previous Model", value=old_model, inline=True)
+        embed.add_field(name="New Model", value=current_model_name, inline=True)
+        embed.set_footer(text="All future requests will use this model")
+        
+        await ctx.send(embed=embed)
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("✅")
+        
+    except Exception as e:
+        await ctx.message.remove_reaction("⏳", bot.user)
+        await ctx.message.add_reaction("❌")
+        await ctx.send(f"❌ Error changing model: {str(e)}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 # --- COMMAND: HELP ---
 @bot.command(name='commands', aliases=['c'])
 async def show_help(ctx):
@@ -590,6 +728,24 @@ async def show_help(ctx):
         value="View calorie summary for all past weeks", 
         inline=False
     )
+    
+    # Add dev commands if user is a developer
+    if is_dev(ctx.author.id):
+        embed.add_field(
+            name="━━━━━━ DEV ONLY ━━━━━━",
+            value="\u200b",
+            inline=False
+        )
+        embed.add_field(
+            name="cal!models",
+            value="List all available Gemini models",
+            inline=False
+        )
+        embed.add_field(
+            name="cal!setmodel <name>",
+            value="Change the active Gemini model",
+            inline=False
+        )
     
     embed.set_footer(text="💡 Tip: Mention 'oily' or 'fried' for auto oil adjustment!")
     
