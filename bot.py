@@ -15,7 +15,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-DEV_USER_IDS = os.getenv('DEV_USER_IDS', '').split(',')  # Comma-separated Discord user IDs
+DEV_USER_IDS = [uid.strip() for uid in os.getenv('DEV_USER_IDS', '').split(',') if uid.strip()]  # Comma-separated Discord user IDs
 
 # 2. Setup Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -107,8 +107,9 @@ async def on_ready():
     with model_lock:
         print(f'🤖 Using model: {current_model_name}')
     print(f'📋 Commands: cal!log, cal!today, cal!delete, cal!week, cal!history, cal!help')
-    if DEV_USER_IDS and DEV_USER_IDS[0]:
-        print(f'👨‍💻 Dev commands enabled for: {DEV_USER_IDS}')
+    filtered_dev_user_ids = [user_id for user_id in DEV_USER_IDS if user_id]
+    if filtered_dev_user_ids:
+        print(f'👨‍💻 Dev commands enabled for: {filtered_dev_user_ids}')
 
 
 # --- GLOBAL ERROR HANDLER ---
